@@ -15,6 +15,7 @@ from batch_processing import read_target_list, save_batch_metadata, initialize_b
 from gaia_queries import get_field_jmag
 from optimization import optimize_target_position
 from paths import RUNS_DIR
+from utils import create_run_directory
 
 def save_optimization_results(result, gaia_id, output_path=None):
     """
