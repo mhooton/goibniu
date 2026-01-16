@@ -1,2 +1,15 @@
-/old/
-/src/credentials.py/
+old/*
+src/credentials.py/
+# Exclude all BPMs except one example
+BPMs/*
+!BPMs/1_BadPixelMap_20251217.fits  # Keep one example BPM
+configs/*
+!configs/config.json
+!configs/precision_prediction_model.joblib
+ref_images/*
+!ref_images/spirit.fits
+runs/*
+!runs/batch_20260114
+!runs/2635476908753563008_20260114
+target_lists/*
+!target_lists/ml_40pc_trunc.txt
