@@ -1,4 +1,4 @@
-old/*
+/old/
 .idea/*
 src/credentials.py/
 # Exclude all BPMs except one example
@@ -14,3 +14,4 @@ runs/*
 !runs/2635476908753563008_20260114
 target_lists/*
 !target_lists/ml_40pc_trunc.txt
+
