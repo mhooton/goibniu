@@ -238,6 +238,11 @@ Examples:
     parser.add_argument('--force-config', action='store_true',
                         help='Override configuration validation errors when resuming')
 
+    parser.add_argument('--download-bpm', action='store_true', default=True,
+                        help='Download latest BPM from server (default: True)')
+    parser.add_argument('--no-download-bpm', dest='download_bpm', action='store_false',
+                        help='Skip BPM download, use existing file')
+
     args = parser.parse_args()
 
     # Set verbosity default based on mode
@@ -262,6 +267,11 @@ Examples:
 
     # Load configuration once
     config = load_config()
+
+    # After loading config, before loading BPM
+    if args.download_bpm is not None:  # Command-line takes priority
+        config['download_BPM_from_server'] = args.download_bpm
+
     print("\n=== Loading Bad Pixel Map ===")
     bad_pixel_map = load_bad_pixel_map(config)
     n_bad_pixels = np.sum(bad_pixel_map)
