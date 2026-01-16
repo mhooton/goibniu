@@ -1,0 +1,12 @@
+{
+  "batch_date": "20260114",
+  "created_timestamp": "2026-01-14T17:40:59.798102",
+  "target_list": "ml_40pc_trunc.txt",
+  "bad_pixel_map": "/Users/matthewhooton/PycharmProjects/spirit_precision/BPMs/1_BadPixelMap_20251217.fits",
+  "reference_image": "/Users/matthewhooton/PycharmProjects/spirit_precision/ref_images/spirit.fits",
+  "aperture_radius": 6,
+  "grid_spacing": 3,
+  "edge_padding": 10,
+  "detector_width": 1024,
+  "detector_height": 1280
+}
