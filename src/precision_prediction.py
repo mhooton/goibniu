@@ -1,6 +1,8 @@
 import numpy as np
 import joblib
 from paths import MODEL_PATH
+import warnings
+warnings.filterwarnings('ignore', message='Trying to unpickle estimator')
 
 def convert_j_to_zyj(jmag, config):
     """
