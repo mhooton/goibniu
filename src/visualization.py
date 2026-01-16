@@ -33,7 +33,7 @@ def create_optimization_visualization(gaia_id, config, opt_result, output_path=N
 
     # Auto-generate output filename if not provided
     if output_path is None:
-        run_dir = create_run_directory(gaia_id)
+        run_dir = create_run_directory(gaia_id, output_dir=output_path)
         ref_image_base = 'noref'
         if 'reference_image' in config:
             ref_image_base = os.path.splitext(os.path.basename(config['reference_image']))[0]
