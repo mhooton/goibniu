@@ -64,8 +64,8 @@ def save_optimization_results(result, gaia_id, output_dir=None):
         'target_jmag': float(result.get('target_jmag', 0)),
         'target_zyj': float(result.get('target_zyj', 0)),
         'target_teff': float(result.get('target_teff', 0)),
-        'reference_image': result.get('reference_image', ''),
-        'bad_pixel_map': result.get('bad_pixel_map', ''),
+        'reference_image': str(result.get('reference_image', '')),
+        'bad_pixel_map': str(result.get('bad_pixel_map', '')),
         'processing_time_seconds': float(result.get('processing_time_seconds', 0)),
         'error_message': result.get('error_message', '')
     }
