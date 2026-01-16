@@ -2,6 +2,11 @@ import os
 import numpy as np
 from astropy.io import fits
 import pandas as pd
+from joblib import Parallel, delayed
+import logging
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 from bad_pixel_handling import aperture_contains_bad_pixels, distance_to_nearest_hazard
 from comparison_star_selection import calculate_expansion_factor, select_comparison_stars, aperture_on_detector
@@ -31,21 +36,21 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
             - 'target_dec': Target Dec (degrees)
             - 'precision_map': 2D array of precision values (if save_precision_map=True)
     """
-    print("\n=== Starting Position Optimization ===")
+    logger.info("\n=== Starting Position Optimization ===")
 
     # Show BPM information
     bpm_path = config['detector']['bad_pixel_map_path']
-    bpm_filename = os.path.basename(bpm_path)  # Extract just the filename
+    bpm_filename = os.path.basename(bpm_path)
     n_bad_pixels = np.sum(bad_pixel_map)
-    print(f"Bad pixel map: {bpm_filename}")
-    print(f"Using bad pixel map: {n_bad_pixels} bad pixels ({n_bad_pixels/bad_pixel_map.size*100:.2f}%)")
+    logger.info(f"Bad pixel map: {bpm_filename}")
+    logger.info(f"Using bad pixel map: {n_bad_pixels} bad pixels ({n_bad_pixels / bad_pixel_map.size * 100:.2f}%)")
 
     # Query expanded field
-    print("Querying Gaia for expanded field...")
+    logger.info("Querying Gaia for expanded field...")
     expansion = calculate_expansion_factor(config)
-    print(f"Expansion factor: {expansion:.3f}")
+    logger.info(f"Expansion factor: {expansion:.3f}")
     jmag_data = get_field_jmag(gaia_id, config, expansion_factor=expansion)
-    print(f"Gaia query returned {len(jmag_data)} stars")
+    logger.info(f"Gaia query returned {len(jmag_data)} stars")
 
     # Get target coordinates
     target_row = jmag_data[jmag_data['source_id'] == int(gaia_id)]
@@ -56,7 +61,7 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
     target_jmag = float(target_row['j_m'][0])
     target_teff = to_float(target_row['teff_val'][0])
 
-    print(f"Target: RA={target_ra:.6f}, Dec={target_dec:.6f}, J={target_jmag:.3f}, Teff={target_teff:.0f}K")
+    logger.info(f"Target: RA={target_ra:.6f}, Dec={target_dec:.6f}, J={target_jmag:.3f}, Teff={target_teff:.0f}K")
 
     # Get detector parameters
     det_width = config['detector']['width_pixels']
@@ -65,15 +70,16 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
     edge_padding = config['detector']['edge_padding_pixels']
     grid_spacing = config['optimization']['grid_spacing_pixels']
 
-    print(f"Detector: {det_width}×{det_height} px, aperture={aperture_radius} px, padding={edge_padding} px")
-    print(f"Grid spacing: {grid_spacing} px")
+    logger.info(f"Detector: {det_width}×{det_height} px, aperture={aperture_radius} px, padding={edge_padding} px")
+    logger.info(f"Grid spacing: {grid_spacing} px")
 
     # Filter comparison stars by magnitude (relative to target)
     fainter_limit = config['comparison_star_limits']['fainter_limit']
     brighter_limit = config['comparison_star_limits']['brighter_limit']
 
-    print(
-        f"Magnitude limits: target J={target_jmag:.3f}, range=[{target_jmag + brighter_limit:.3f}, {target_jmag + fainter_limit:.3f}]")
+    logger.info(f"Magnitude limits: target J={target_jmag:.3f}, range=[{target_jmag + brighter_limit:.3f},"
+                 f"{target_jmag+ fainter_limit:.3f}]")
+
 
     comp_stars = jmag_data[
         (jmag_data['source_id'] != int(gaia_id)) &
@@ -81,11 +87,11 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
         (jmag_data['j_m'] > target_jmag + brighter_limit)
         ]
 
-    print(f"Potential comparison stars in magnitude range: {len(comp_stars)}")
+    logger.info(f"Potential comparison stars in magnitude range: {len(comp_stars)}")
 
     if len(comp_stars) == 0:
-        print("ERROR: No comparison stars found in magnitude range!")
-        print("Cannot create precision map without comparison stars.")
+        logger.info("No comparison stars found in magnitude range!")
+        logger.info("Cannot create precision map without comparison stars.")
         raise ValueError("Cannot optimize without comparison stars")
 
     # Create grid of target positions
@@ -97,7 +103,7 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
                             grid_spacing)
 
     total_positions = len(x_positions) * len(y_positions)
-    print(f"Testing {total_positions} grid positions (spacing={grid_spacing} pixels)...")
+    logger.info(f"Testing {total_positions} grid positions (spacing={grid_spacing} pixels)...")
 
     # Store results
     results = []
@@ -105,24 +111,8 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
     # Convert target J-mag to zYJ once
     target_zyj = to_float(convert_j_to_zyj(target_jmag, config))
 
-    # Counters for diagnostics
-    n_tested = 0
-    n_target_bad_pix = 0
-    n_target_off_detector = 0
-    n_no_valid_comps = 0
-
-    # Evaluate each grid position
-    for i, target_x in enumerate(x_positions):
-        if i % 20 == 0:
-            print(f"Progress: {i}/{len(x_positions)} rows... (valid positions so far: {len(results)})")
-
-        for target_y in y_positions:
-            n_tested += 1
-
-            # Check if target aperture is on detector (should always be true given how we generate grid, but check anyway)
-            if not aperture_on_detector(target_x, target_y, aperture_radius, det_width, det_height, edge_padding):
-                n_target_off_detector += 1
-                continue
+    # Run parallel grid search
+    logger.info(f"Running parallel grid search using all available CPU cores...")
 
             # Check if target aperture is clean
             if aperture_contains_bad_pixels(target_x, target_y, aperture_radius, bad_pixel_map):
@@ -156,29 +146,21 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
             })
             precision = to_float(prediction_from_DT(features))
 
-            # Store result
-            results.append({
-                'x': target_x,
-                'y': target_y,
-                'precision': precision,
-                'n_comp': comp_selection['n_valid'],
-                'combined_mag': to_float(comp_selection['combined_mag'])
-            })
-
-    print(f"\n=== Optimization Statistics ===")
-    print(f"Total positions tested: {n_tested}")
-    print(f"Target aperture off detector: {n_target_off_detector} ({n_target_off_detector / n_tested * 100:.1f}%)")
-    print(f"Target aperture contains bad pixels: {n_target_bad_pix} ({n_target_bad_pix / n_tested * 100:.1f}%)")
-    print(f"No valid comparison stars: {n_no_valid_comps} ({n_no_valid_comps / n_tested * 100:.1f}%)")
-    print(f"Successful positions: {len(results)} ({len(results) / n_tested * 100:.1f}%)")
+    logger.info(f"\n=== Optimization Statistics ===")
+    logger.info(f"Total positions tested: {n_tested}")
+    logger.info(
+        f"Target aperture off detector: {n_target_off_detector} ({n_target_off_detector / n_tested * 100:.1f}%)")
+    logger.info(f"Target aperture contains bad pixels: {n_target_bad_pix} ({n_target_bad_pix / n_tested * 100:.1f}%)")
+    logger.info(f"No valid comparison stars: {n_no_valid_comps} ({n_no_valid_comps / n_tested * 100:.1f}%)")
+    logger.info(f"Successful positions: {len(results)} ({len(results) / n_tested * 100:.1f}%)")
 
     if len(results) == 0:
-        print("\nWARNING: No valid positions found!")
-        print("\nPossible issues:")
-        print(f"  - Detector too small ({det_width}×{det_height} px)")
-        print(f"  - Aperture + padding too large ({aperture_radius + edge_padding} px from edges)")
-        print(f"  - All comparison stars fall outside detector at all positions")
-        print(f"  - Bad pixel contamination too high")
+        logger.info("\nNo valid positions found!")
+        logger.info("\nPossible issues:")
+        logger.info(f"  - Detector too small ({det_width}×{det_height} px)")
+        logger.info(f"  - Aperture + padding too large ({aperture_radius + edge_padding} px from edges)")
+        logger.info(f"  - All comparison stars fall outside detector at all positions")
+        logger.info(f"  - Bad pixel contamination too high")
         raise ValueError("No valid positions found - detector may be too contaminated with bad pixels")
 
     # Find best precision
@@ -188,10 +170,10 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
     # Get all positions with best precision
     optimal_positions = [r for r in results if r['precision'] == best_precision]
 
-    print(f"\nBest precision: {best_precision:.6f}")
-    print(f"Number of positions with best precision: {len(optimal_positions)}")
-    print(f"Precision range: [{np.min(precisions):.6f}, {np.max(precisions):.6f}]")
-    print(f"Mean precision: {np.mean(precisions):.6f}")
+    logger.info(f"\nBest precision: {best_precision:.6f}")
+    logger.info(f"Number of positions with best precision: {len(optimal_positions)}")
+    logger.info(f"Precision range: [{np.min(precisions):.6f}, {np.max(precisions):.6f}]")
+    logger.info(f"Mean precision: {np.mean(precisions):.6f}")
 
     # Break ties by maximizing distance to nearest hazard (bad pixel or edge)
     if len(optimal_positions) > 1:
@@ -209,9 +191,9 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
         best_distance = distance_to_nearest_hazard(best_result['x'], best_result['y'],
                                                    bad_pixel_map, det_width, det_height, edge_padding)
 
-    print(f"\nOptimal position: X={best_result['x']:.1f}, Y={best_result['y']:.1f}")
-    print(f"Distance to nearest hazard (bad pixel or edge): {best_distance:.2f} pixels")
-    print(f"Number of comparison stars: {best_result['n_comp']}")
+    logger.info(f"\nOptimal position: X={best_result['x']:.1f}, Y={best_result['y']:.1f}")
+    logger.info(f"Distance to nearest hazard (bad pixel or edge): {best_distance:.2f} pixels")
+    logger.info(f"Number of comparison stars: {best_result['n_comp']}")
 
     # Calculate additional positioning information
     # Center of detector in detector coordinates
@@ -235,22 +217,22 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
     offset_ra_arcsec = offset_ra * 3600.0
     offset_dec_arcsec = offset_dec * 3600.0
 
-    print(f"\n--- Detector Center Information ---")
-    print(f"Detector center (optimized): RA={center_ra:.6f}°, Dec={center_dec:.6f}°")
-    print(f"Target offset from center: ΔX={offset_x:.1f} px, ΔY={offset_y:.1f} px")
-    print(f"Target offset from center: ΔRA={offset_ra_arcsec:.2f}\", ΔDec={offset_dec_arcsec:.2f}\"")
+    logger.info(f"\n--- Detector Center Information ---")
+    logger.info(f"Detector center (optimized): RA={center_ra:.6f}°, Dec={center_dec:.6f}°")
+    logger.info(f"Target offset from center: ΔX={offset_x:.1f} px, ΔY={offset_y:.1f} px")
+    logger.info(f"Target offset from center: ΔRA={offset_ra_arcsec:.2f}\", ΔDec={offset_dec_arcsec:.2f}\"")
 
     # Create precision map if requested
     precision_map = None
     if save_precision_map:
-        print("\n=== Creating Precision Map ===")
+        logger.info("\n=== Creating Precision Map ===")
 
         # Calculate coarse grid dimensions
         coarse_height = len(y_positions)
         coarse_width = len(x_positions)
 
-        print(f"Coarse grid dimensions: {coarse_width} × {coarse_height}")
-        print(f"Each pixel represents {grid_spacing} × {grid_spacing} detector pixels")
+        logger.info(f"Coarse grid dimensions: {coarse_width} × {coarse_height}")
+        logger.info(f"Each pixel represents {grid_spacing} × {grid_spacing} detector pixels")
 
         # Initialize coarse map with NaN
         precision_map = np.full((coarse_height, coarse_width), np.nan)
@@ -266,7 +248,7 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
             precision_map[coarse_y_idx, coarse_x_idx] = result['precision']
 
         n_filled = np.sum(np.isfinite(precision_map))
-        print(f"Precision map contains {n_filled} valid positions")
+        logger.info(f"Precision map contains {n_filled} valid positions")
 
         # Generate output filename
         run_dir = create_run_directory(gaia_id)
@@ -276,7 +258,7 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
         badpix_base = os.path.splitext(os.path.basename(config['detector']['bad_pixel_map_path']))[0]
         map_output_path = run_dir / f'precision_map_{gaia_id}_{ref_image_base}_{badpix_base}.fits'
 
-        print(f"Saving precision map FITS to: {map_output_path}")
+        logger.info(f"Saving precision map FITS to: {map_output_path}")
 
         # Save to FITS with coarse grid parameters
         hdu = fits.PrimaryHDU(precision_map)
@@ -314,7 +296,7 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
 
         hdu.writeto(map_output_path, overwrite=True)
 
-        print(f"Precision map FITS saved successfully")
+        logger.info(f"Precision map FITS saved successfully")
 
         # Create PNG visualization
         save_precision_map_png(precision_map, config, gaia_id,

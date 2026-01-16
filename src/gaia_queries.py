@@ -1,6 +1,8 @@
 import numpy as np
 from astroquery.gaia import Gaia
 from coordinate_utils import get_current_julian_year, propagate_position
+import logging
+logging.getLogger("astroquery").setLevel(logging.ERROR)
 
 def get_field_jmag(gaia_id, config, expansion_factor=1.0):
     """

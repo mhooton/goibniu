@@ -7,6 +7,10 @@ from astroquery.skyview import SkyView
 from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
 import astropy.units as u
+import logging
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 from comparison_star_selection import calculate_expansion_factor
 from coordinate_utils import pixel_to_sky, sky_to_pixel, create_wcs
@@ -25,7 +29,7 @@ def create_optimization_visualization(gaia_id, config, opt_result, output_path=N
         output_path: Path to output PNG file (if None, auto-generate)
     """
 
-    print("\n=== Creating Optimization Visualization ===")
+    logger.info("\n=== Creating Optimization Visualization ===")
 
     # Auto-generate output filename if not provided
     if output_path is None:
@@ -74,8 +78,8 @@ def create_optimization_visualization(gaia_id, config, opt_result, output_path=N
     center_ra = np.mean(all_ra)
     center_dec = np.mean(all_dec)
 
-    print(f"Querying sky survey at RA={center_ra:.6f}, Dec={center_dec:.6f}")
-    print(f"Field size: {ra_width * 60:.2f}' × {dec_height * 60:.2f}'")
+    logger.info(f"Querying sky survey at RA={center_ra:.6f}, Dec={center_dec:.6f}")
+    logger.info(f"Field size: {ra_width * 60:.2f}' × {dec_height * 60:.2f}'")
 
     # Query sky survey image
     try:
@@ -95,11 +99,11 @@ def create_optimization_visualization(gaia_id, config, opt_result, output_path=N
         survey_data = survey_hdu.data
         survey_wcs = WCS(survey_hdu.header)
 
-        print("Sky survey image retrieved successfully")
+        logger.info("Sky survey image retrieved successfully")
 
     except Exception as e:
-        print(f"Warning: Could not retrieve sky survey image: {e}")
-        print("Creating visualization without background image")
+        logger.info(f"Warning: Could not retrieve sky survey image: {e}")
+        logger.info("Creating visualization without background image")
         survey_data = None
         survey_wcs = None
 
@@ -213,10 +217,10 @@ def create_optimization_visualization(gaia_id, config, opt_result, output_path=N
     )
 
     # Debug: print corner positions
-    print(f"Detector corners RA range: [{np.min(detector_corners_ra):.6f}, {np.max(detector_corners_ra):.6f}]")
-    print(f"Detector corners Dec range: [{np.min(detector_corners_dec):.6f}, {np.max(detector_corners_dec):.6f}]")
-    print(f"Target RA/Dec: ({target_ra:.6f}, {target_dec:.6f})")
-    print(f"Detector center RA/Dec: ({detector_center_ra:.6f}, {detector_center_dec:.6f})")
+    logger.info(f"Detector corners RA range: [{np.min(detector_corners_ra):.6f}, {np.max(detector_corners_ra):.6f}]")
+    logger.info(f"Detector corners Dec range: [{np.min(detector_corners_dec):.6f}, {np.max(detector_corners_dec):.6f}]")
+    logger.info(f"Target RA/Dec: ({target_ra:.6f}, {target_dec:.6f})")
+    logger.info(f"Detector center RA/Dec: ({detector_center_ra:.6f}, {detector_center_dec:.6f})")
 
     # Plot detector FOV
     ax.plot(detector_corners_ra, detector_corners_dec,
@@ -336,12 +340,12 @@ def create_optimization_visualization(gaia_id, config, opt_result, output_path=N
     try:
         plt.tight_layout()
     except ValueError:
-        print("Warning: tight_layout failed, saving without layout adjustment")
+        logger.info("Warning: tight_layout failed, saving without layout adjustment")
 
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
 
-    print(f"Visualization saved to: {output_path}")
+    logger.info(f"Visualization saved to: {output_path}")
 
 def save_precision_map_png(precision_map, config, gaia_id, optimal_x_det, optimal_y_det,
                           best_precision, det_width, det_height):
@@ -360,7 +364,7 @@ def save_precision_map_png(precision_map, config, gaia_id, optimal_x_det, optima
     """
 
 
-    print("\n=== Creating Precision Map PNG ===")
+    logger.info("\n=== Creating Precision Map PNG ===")
 
     # Get parameters
     coarse_height, coarse_width = precision_map.shape
@@ -371,14 +375,14 @@ def save_precision_map_png(precision_map, config, gaia_id, optimal_x_det, optima
     # Calculate vmin and vmax
     finite_mask = np.isfinite(precision_map)
     if not np.any(finite_mask):
-        print("ERROR: No finite precision values in map")
+        logger.info("ERROR: No finite precision values in map")
         return
 
     finite_values = precision_map[finite_mask]
     vmin = np.min(finite_values)
     vmax = np.max(finite_values)
 
-    print(f"Precision range: [{vmin:.6f}, {vmax:.6f}]")
+    logger.info(f"Precision range: [{vmin:.6f}, {vmax:.6f}]")
 
     # Create figure with proportional dimensions
     # Base size on detector aspect ratio
@@ -475,9 +479,9 @@ def save_precision_map_png(precision_map, config, gaia_id, optimal_x_det, optima
     try:
         plt.tight_layout()
     except ValueError:
-        print("Warning: tight_layout failed, saving without layout adjustment")
+        logger.info("Warning: tight_layout failed, saving without layout adjustment")
 
     plt.savefig(png_output_path, dpi=150, bbox_inches='tight')
     plt.close()
 
-    print(f"Precision map PNG saved to: {png_output_path}")
+    logger.info(f"Precision map PNG saved to: {png_output_path}")

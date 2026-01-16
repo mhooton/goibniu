@@ -8,6 +8,10 @@ import argparse
 import time
 warnings.filterwarnings('ignore', message='Trying to unpickle estimator')
 
+import logging
+# Setup logging
+logger = logging.getLogger(__name__)
+
 # Load modules
 from config import load_config
 from bad_pixel_handling import load_bad_pixel_map
@@ -96,12 +100,12 @@ def predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False,
         opt_result['bad_pixel_map'] = config['detector'].get('bad_pixel_map_path', '')
         opt_result['error_message'] = ''
 
-        print("\n=== Optimization Results ===")
-        print(f"Optimal detector position: X={opt_result['optimal_x']:.1f}, Y={opt_result['optimal_y']:.1f}")
-        print(f"Predicted precision: {opt_result['precision']:.6f}")
-        print(f"Usable comparison stars: {opt_result['n_comparison_stars']}")
-        print(f"Distance to nearest hazard: {opt_result['distance_to_hazard']:.2f} pixels")
-        print(f"Processing time: {processing_time:.1f} seconds")
+        logger.info("\n=== Optimization Results ===")
+        logger.info(f"Optimal detector position: X={opt_result['optimal_x']:.1f}, Y={opt_result['optimal_y']:.1f}")
+        logger.info(f"Predicted precision: {opt_result['precision']:.6f}")
+        logger.info(f"Usable comparison stars: {opt_result['n_comparison_stars']}")
+        logger.info(f"Distance to nearest hazard: {opt_result['distance_to_hazard']:.2f} pixels")
+        logger.info(f"Processing time: {processing_time:.1f} seconds")
 
         if save_results:
             save_optimization_results(opt_result, gaia_id)
@@ -150,22 +154,22 @@ def predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False,
     predicted_precision = to_float(predicted_precision)
 
     # Print target information
-    print(f"\n--- Target Star Information ---")
-    print(f"Gaia DR2 ID: {gaia_id}")
-    print(f"zYJ magnitude: {target_zyj:.3f}")
-    print(f"Effective temperature: {target_teff:.0f} K")
+    logger.info(f"\n--- Target Star Information ---")
+    logger.info(f"Gaia DR2 ID: {gaia_id}")
+    logger.info(f"zYJ magnitude: {target_zyj:.3f}")
+    logger.info(f"Effective temperature: {target_teff:.0f} K")
 
     # Print field information
-    print(f"\n--- Field Information ---")
-    print(f"Number of comparison stars: {n_comp}")
-    print(f"Combined magnitude (with target): {combined_mags:.3f}")
-    print(f"Effective magnitude: {effective_mag:.3f}")
-    print(f"Combined magnitude (without target): {combined_mags_wo_target:.3f}")
+    logger.info(f"\n--- Field Information ---")
+    logger.info(f"Number of comparison stars: {n_comp}")
+    logger.info(f"Combined magnitude (with target): {combined_mags:.3f}")
+    logger.info(f"Effective magnitude: {effective_mag:.3f}")
+    logger.info(f"Combined magnitude (without target): {combined_mags_wo_target:.3f}")
 
     # Print quadratic fit prediction
-    print(f"\n--- Precision Predictions ---")
-    print(f"Quadratic fit combined prediction: {predicted_precision:.6f}")
-    print(f"Quadratic fit effective prediction: {eff_predicted_precision:.6f}")
+    logger.info(f"\n--- Precision Predictions ---")
+    logger.info(f"Quadratic fit combined prediction: {predicted_precision:.6f}")
+    logger.info(f"Quadratic fit effective prediction: {eff_predicted_precision:.6f}")
 
     # Prepare features for Decision Tree prediction
     features = pd.DataFrame({
@@ -177,7 +181,7 @@ def predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False,
 
     # Predict using Decision Tree model
     predicted_precision_DT = to_float(prediction_from_DT(features))
-    print(f"Decision Tree prediction: {predicted_precision_DT:.6f}")
+    logger.info(f"Decision Tree prediction: {predicted_precision_DT:.6f}")
 
 
 def main():
@@ -212,6 +216,12 @@ Examples:
     parser.add_argument('--viz', action='store_true', help='Create visualization')
     parser.add_argument('--map', action='store_true', help='Create precision map')
 
+    # Output verbosity
+    parser.add_argument('--verbosity', type=int, choices=[0, 1, 2], default=None,
+                        help='Output verbosity: 0=quiet (one-line summaries only), '
+                             '1=normal (detailed output), 2=verbose (includes parallel progress). '
+                             'Defaults to 1 for single target, 0 for batch.')
+
     # Batch resume options
     parser.add_argument('--resume', type=str, metavar='YYYYMMDD',
                         help='Resume batch from specified date (format: YYYYMMDD)')
@@ -221,6 +231,26 @@ Examples:
                         help='Override configuration validation errors when resuming')
 
     args = parser.parse_args()
+
+    # Set verbosity default based on mode
+    if args.verbosity is None:
+        if args.batch:
+            args.verbosity = 0  # Default to quiet for batch
+        else:
+            args.verbosity = 1  # Default to normal for single target
+
+    # Configure logging based on verbosity
+    if args.verbosity == 0:
+        log_level = logging.WARNING
+    elif args.verbosity == 1:
+        log_level = logging.INFO
+    else:  # verbosity == 2
+        log_level = logging.DEBUG
+
+    logging.basicConfig(
+        level=log_level,
+        format='%(message)s'  # Clean format without timestamps/levels for user-facing output
+    )
 
     # Load configuration once
     config = load_config()
@@ -234,24 +264,25 @@ Examples:
     if args.target:
         gaia_id = args.target
 
-        print("\n" + "=" * 60)
-        print(f"PROCESSING TARGET: {gaia_id}")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info(f"PROCESSING TARGET: {gaia_id}")
+        logger.info("=" * 60)
 
         # Run centered prediction if requested
         if args.centered:
-            print("\n" + "=" * 60)
-            print("RUNNING CENTERED PREDICTION")
-            print("=" * 60)
-            predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False, create_viz=False)
+            logger.info("\n" + "=" * 60)
+            logger.info("RUNNING CENTERED PREDICTION")
+            logger.info("=" * 60)
+            predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False,
+                    create_viz=False)
 
         # Run optimization if requested
         if args.optimize:
-            print("\n" + "=" * 60)
-            print("RUNNING OPTIMIZATION")
-            print("=" * 60)
-            predict(gaia_id, config, bad_pixel_map, optimize=True, save_results=args.save, create_viz=args.viz,
-                    save_precision_map=args.map)
+            logger.info("\n" + "=" * 60)
+            logger.info("RUNNING OPTIMIZATION")
+            logger.info("=" * 60)
+            predict(gaia_id, config, bad_pixel_map, optimize=True, save_results=args.save,
+                    create_viz=args.viz, save_precision_map=args.map)
 
         # If no mode specified, default to centered prediction
         if not (args.centered or args.optimize):
@@ -355,9 +386,9 @@ Examples:
 
         # Process each target
         for i, gaia_id in enumerate(gaia_ids, 1):
-            print("\n" + "=" * 60)
-            print(f"TARGET {i}/{len(gaia_ids)}: {gaia_id}")
-            print("=" * 60)
+            logger.info("\n" + "=" * 60)
+            logger.info(f"TARGET {i}/{len(gaia_ids)}: {gaia_id}")
+            logger.info("=" * 60)
 
             # try:
             # Run optimization
@@ -368,22 +399,29 @@ Examples:
             # Append to batch CSV
             append_to_batch_csv(csv_path, result)
 
-            print(f"✓ Target {gaia_id} completed successfully")
+                if args.verbosity == 0:
+                    print(f"[{i}/{len(gaia_ids)}] {gaia_id} → SUCCESS (prec={result['precision']:.6f}, "
+                          f"{result['n_comparison_stars']} comps, {result['processing_time_seconds']:.1f}s)")
+                else:
+                    logger.info(f"✓ Target {gaia_id} completed successfully")
 
-            # except Exception as e:
-            #     # Handle failure
-            #     print(f"✗ Target {gaia_id} FAILED: {e}")
-            #
-            #     # Write failure to CSV
-            #     failed_result = {
-            #         'gaia_id': gaia_id,
-            #         'status': 'FAILED',
-            #         'timestamp': datetime.now().isoformat(),
-            #         'reference_image': config.get('reference_image', ''),
-            #         'bad_pixel_map': config['detector'].get('bad_pixel_map_path', ''),
-            #         'error_message': str(e)
-            #     }
-            #     append_to_batch_csv(csv_path, failed_result)
+            except Exception as e:
+                # Handle failure
+                if args.verbosity == 0:
+                    print(f"[{i}/{len(gaia_ids)}] {gaia_id} → FAILED ({str(e)[:50]})")
+                else:
+                    logger.error(f"✗ Target {gaia_id} FAILED: {e}")
+
+                # Write failure to CSV
+                failed_result = {
+                    'gaia_id': gaia_id,
+                    'status': 'FAILED',
+                    'timestamp': datetime.now().isoformat(),
+                    'reference_image': config.get('reference_image', ''),
+                    'bad_pixel_map': config['detector'].get('bad_pixel_map_path', ''),
+                    'error_message': str(e)
+                }
+                append_to_batch_csv(csv_path, failed_result)
 
         print("\n" + "=" * 60)
         print("BATCH PROCESSING COMPLETE")
