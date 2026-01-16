@@ -24,19 +24,22 @@ from precision_prediction import convert_j_to_zyj, combined_mag, effective_mg, p
 from utils import create_run_directory, to_float
 from visualization import create_optimization_visualization
 
-def save_optimization_results(result, gaia_id, output_path=None):
+
+def save_optimization_results(result, gaia_id, output_dir=None):
     """
     Save optimization results to JSON file in run directory.
 
     Args:
         result: Dictionary returned from optimize_target_position()
         gaia_id: Gaia DR2 source_id
-        output_path: Path to output JSON file (if None, auto-generate in run dir)
+        output_dir: Optional output directory (if None, creates default run dir)
     """
 
-    if output_path is None:
-        run_dir = create_run_directory(gaia_id)
-        output_path = run_dir / f"optimization_{gaia_id}.json"
+    # Get or create output directory
+    run_dir = create_run_directory(gaia_id, output_dir=output_dir)
+
+    # Build the file path inside that directory
+    output_path = run_dir / f"optimization_{gaia_id}.json"
 
     # Convert numpy types to Python native types for JSON serialization
     serializable_result = {
@@ -69,11 +72,11 @@ def save_optimization_results(result, gaia_id, output_path=None):
     with open(output_path, 'w') as f:
         json.dump(serializable_result, f, indent=2)
 
-    print(f"\nResults saved to: {output_path}")
+    logger.info(f"\nResults saved to: {output_path}")
 
 
 def predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False,
-            create_viz=False, save_precision_map=False):
+            create_viz=False, save_precision_map=False, output_dir=None):
     """
     Main prediction function for a given target star.
 
@@ -110,11 +113,13 @@ def predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False,
         logger.info(f"Distance to nearest hazard: {opt_result['distance_to_hazard']:.2f} pixels")
         logger.info(f"Processing time: {processing_time:.1f} seconds")
 
+        # Save results if requested
         if save_results:
-            save_optimization_results(opt_result, gaia_id)
+            save_optimization_results(opt_result, gaia_id, output_dir=output_dir)
 
+        # Create visualization if requested
         if create_viz:
-            create_optimization_visualization(gaia_id, config, opt_result)
+            create_optimization_visualization(gaia_id, config, opt_result, output_path=output_dir)
 
         return opt_result
 
@@ -393,14 +398,19 @@ Examples:
             logger.info(f"TARGET {i}/{len(gaia_ids)}: {gaia_id}")
             logger.info("=" * 60)
 
-            # try:
-            # Run optimization
-            result = predict(gaia_id, config, bad_pixel_map, optimize=True,
-                             save_results=args.save, create_viz=args.viz,
-                             save_precision_map=args.map)
+            try:
+                # Create output directory for this target (flat structure)
+                target_output_dir = RUNS_DIR / f"{gaia_id}_{date_str}"
+                target_output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Append to batch CSV
-            append_to_batch_csv(csv_path, result)
+                # Run optimization with explicit output directory
+                result = predict(gaia_id, config, bad_pixel_map, optimize=True,
+                                 save_results=args.save, create_viz=args.viz,
+                                 save_precision_map=args.map,
+                                 output_dir=target_output_dir)
+
+                # Append to batch CSV
+                append_to_batch_csv(csv_path, result)
 
                 if args.verbosity == 0:
                     print(f"[{i}/{len(gaia_ids)}] {gaia_id} → SUCCESS (prec={result['precision']:.6f}, "
