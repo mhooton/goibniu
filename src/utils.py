@@ -24,16 +24,21 @@ def to_float(value):
             value = value.item()
     return float(value)
 
-def create_run_directory(gaia_id):
+def create_run_directory(gaia_id, output_dir=None):
     """
     Create output directory for this run.
 
     Args:
         gaia_id: Gaia DR2 source_id
+        output_dir: Optional pre-created output directory path
 
     Returns:
         Absolute path to run directory
     """
+
+    # If output_dir provided (e.g., from batch mode), use it
+    if output_dir is not None:
+        return output_dir
 
     date_str = datetime.now().strftime("%Y%m%d")
     run_dir = RUNS_DIR / f"{gaia_id}_{date_str}"
