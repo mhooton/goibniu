@@ -16,6 +16,81 @@ from precision_prediction import convert_j_to_zyj, prediction_from_DT
 from utils import to_float, create_run_directory
 from visualization import save_precision_map_png
 
+import warnings
+warnings.filterwarnings('ignore', message="Warning: 'partition' will ignore the 'mask' of the MaskedArray.*", category=UserWarning)
+
+
+def test_single_position(target_x, target_y, target_ra, target_dec,
+                         comp_stars, config, bad_pixel_map,
+                         det_width, det_height, aperture_radius, edge_padding,
+                         target_zyj, target_teff):
+    """
+    Test a single grid position for photometric precision.
+
+    Designed to be called in parallel via joblib.
+
+    Args:
+        target_x: Target X position on detector (pixels)
+        target_y: Target Y position on detector (pixels)
+        target_ra: Target right ascension (degrees)
+        target_dec: Target declination (degrees)
+        comp_stars: Table of comparison stars with ra, dec, j_m columns
+        config: Configuration dictionary
+        bad_pixel_map: 2D boolean array where True = bad pixel
+        det_width: Detector width (pixels)
+        det_height: Detector height (pixels)
+        aperture_radius: Aperture radius (pixels)
+        edge_padding: Edge padding (pixels)
+        target_zyj: Target star zYJ magnitude
+        target_teff: Target star effective temperature (K)
+
+    Returns:
+        Dictionary with position results, or None if position is invalid.
+        Returns a dict with 'failure_reason' key if position fails validation.
+    """
+    # Check if target aperture is on detector
+    if not aperture_on_detector(target_x, target_y, aperture_radius, det_width, det_height, edge_padding):
+        return {'failure_reason': 'target_off_detector'}
+
+    # Check if target aperture is clean
+    if aperture_contains_bad_pixels(target_x, target_y, aperture_radius, bad_pixel_map):
+        return {'failure_reason': 'target_bad_pixels'}
+
+    # Create WCS for this target position
+    wcs_obj = create_wcs(target_ra, target_dec, target_x, target_y, config)
+
+    # Transform all comparison stars to pixel coordinates
+    comp_x, comp_y = sky_to_pixel(comp_stars['ra'], comp_stars['dec'], wcs_obj)
+
+    # Select comparison stars for this position
+    comp_selection = select_comparison_stars(
+        target_x, target_y,
+        comp_x, comp_y, comp_stars['j_m'],
+        bad_pixel_map, config
+    )
+
+    # Skip if no valid comparison stars
+    if comp_selection['n_valid'] == 0:
+        return {'failure_reason': 'no_valid_comps'}
+
+    # Predict precision using Decision Tree
+    features = pd.DataFrame({
+        'Comp stars': [comp_selection['n_valid']],
+        'zYJ mag': [target_zyj],
+        'Combined mag': [to_float(comp_selection['combined_mag'])],
+        'Teff': [target_teff]
+    })
+    precision = to_float(prediction_from_DT(features))
+
+    # Return successful result
+    return {
+        'x': target_x,
+        'y': target_y,
+        'precision': precision,
+        'n_comp': comp_selection['n_valid'],
+        'combined_mag': to_float(comp_selection['combined_mag'])
+    }
+
 def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=False):
     """
     Find optimal detector position for target star to maximize photometric precision.
@@ -114,28 +189,26 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
     # Run parallel grid search
     logger.info(f"Running parallel grid search using all available CPU cores...")
 
-            # Check if target aperture is clean
-            if aperture_contains_bad_pixels(target_x, target_y, aperture_radius, bad_pixel_map):
-                n_target_bad_pix += 1
-                continue
+    parallel_verbose = 10 if logging.getLogger().getEffectiveLevel() <= logging.DEBUG else 0
 
-            # Create WCS for this target position
-            wcs_obj = create_wcs(target_ra, target_dec, target_x, target_y, config)
+    all_results = Parallel(n_jobs=-1, verbose=parallel_verbose)(
+        delayed(test_single_position)(
+            target_x, target_y, target_ra, target_dec,
+            comp_stars, config, bad_pixel_map,
+            det_width, det_height, aperture_radius, edge_padding,
+            target_zyj, target_teff
+        )
+        for target_x in x_positions
+        for target_y in y_positions
+    )
 
-            # Transform all comparison stars to pixel coordinates
-            comp_x, comp_y = sky_to_pixel(comp_stars['ra'], comp_stars['dec'], wcs_obj)
-
-            # Select comparison stars for this position
-            comp_selection = select_comparison_stars(
-                target_x, target_y,
-                comp_x, comp_y, comp_stars['j_m'],
-                bad_pixel_map, config
-            )
-
-            # Skip if no valid comparison stars
-            if comp_selection['n_valid'] == 0:
-                n_no_valid_comps += 1
-                continue
+    # Process results and collect diagnostics
+    results = []
+    n_tested = len(all_results)
+    n_target_bad_pix = sum(1 for r in all_results if r is not None and r.get('failure_reason') == 'target_bad_pixels')
+    n_target_off_detector = sum(
+        1 for r in all_results if r is not None and r.get('failure_reason') == 'target_off_detector')
+    n_no_valid_comps = sum(1 for r in all_results if r is not None and r.get('failure_reason') == 'no_valid_comps')
 
             # Predict precision using Decision Tree
             features = pd.DataFrame({
@@ -145,6 +218,7 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
                 'Teff': [target_teff]
             })
             precision = to_float(prediction_from_DT(features))
+    results = [r for r in all_results if r is not None and 'failure_reason' not in r]
 
     logger.info(f"\n=== Optimization Statistics ===")
     logger.info(f"Total positions tested: {n_tested}")
