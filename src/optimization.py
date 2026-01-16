@@ -210,14 +210,7 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
         1 for r in all_results if r is not None and r.get('failure_reason') == 'target_off_detector')
     n_no_valid_comps = sum(1 for r in all_results if r is not None and r.get('failure_reason') == 'no_valid_comps')
 
-            # Predict precision using Decision Tree
-            features = pd.DataFrame({
-                'Comp stars': [comp_selection['n_valid']],
-                'zYJ mag': [target_zyj],
-                'Combined mag': [to_float(comp_selection['combined_mag'])],
-                'Teff': [target_teff]
-            })
-            precision = to_float(prediction_from_DT(features))
+    # Filter out failed positions (those with 'failure_reason' key)
     results = [r for r in all_results if r is not None and 'failure_reason' not in r]
 
     logger.info(f"\n=== Optimization Statistics ===")
