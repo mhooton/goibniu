@@ -15,11 +15,14 @@ logger = logging.getLogger(__name__)
 # Load modules
 from config import load_config
 from bad_pixel_handling import load_bad_pixel_map
-from batch_processing import read_target_list, save_batch_metadata, initialize_batch_csv, append_to_batch_csv
+from batch_processing import (read_target_list, save_batch_metadata, initialize_batch_csv, append_to_batch_csv,
+                              load_and_validate_batch_metadata, read_completed_targets)
 from gaia_queries import get_field_jmag
 from optimization import optimize_target_position
 from paths import RUNS_DIR
-from utils import create_run_directory
+from precision_prediction import convert_j_to_zyj, combined_mag, effective_mg, prediction_from_fit, prediction_from_DT
+from utils import create_run_directory, to_float
+from visualization import create_optimization_visualization
 
 def save_optimization_results(result, gaia_id, output_path=None):
     """
