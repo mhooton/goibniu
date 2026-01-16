@@ -2,7 +2,7 @@
   "download_BPM_from_server": true,
   "reference_image": "spirit.fits",
   "detector": {
-    "bad_pixel_map_path": "1_BadPixelMap.fits",
+    "bad_pixel_map_path": "1_BadPixelMap_20251217.fits",
     "edge_padding_pixels": 10
   },
   "j_to_zyj_conversion": {
