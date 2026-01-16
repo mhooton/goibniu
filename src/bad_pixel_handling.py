@@ -4,7 +4,21 @@ from datetime import datetime, timedelta
 import os
 from astropy.io import fits
 from paths import BPM_DIR
-from credentials import SFTP_HOST, SFTP_USERNAME, SFTP_BASE_PATH, SFTP_TELESCOPE
+import re
+try:
+    from credentials import SFTP_HOST, SFTP_USERNAME, SFTP_BASE_PATH, SFTP_TELESCOPE
+    CREDENTIALS_AVAILABLE = True
+except ImportError:
+    CREDENTIALS_AVAILABLE = False
+    SFTP_HOST = None
+    SFTP_USERNAME = None
+    SFTP_BASE_PATH = None
+    SFTP_TELESCOPE = None
+
+import logging
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
 
 
 def download_latest_bpm(config, cutoff_date="20210101"):
@@ -87,38 +101,108 @@ def download_latest_bpm(config, cutoff_date="20210101"):
         sftp.close()
         ssh.close()
 
+
 def load_bad_pixel_map(config):
     """
-    Load bad pixel map from FITS file.
-    Downloads from server if configured, otherwise uses local path.
-
-    Args:
-        config: Configuration dictionary
-
-    Returns:
-        2D boolean numpy array where True = bad pixel, False = good pixel
+    Load bad pixel map with priority hierarchy:
+    1. Command-line override (handled before calling this)
+    2. Config download_BPM_from_server
+       - If True: download (requires credentials)
+       - If False: use config['detector']['bad_pixel_map_path'] if exists
+    3. Most recent dated BPM in BPMs directory
+    4. Any BPM in BPMs directory
+    5. Error if none found
     """
+    bpm_path = None
 
-    # Check if we should download from server
+    # Priority 1 & 2: Download or use config path
     if config.get('download_BPM_from_server', False):
-        bpm_path = download_latest_bpm(config)
-
-        if bpm_path is None:
-            # Fall back to config path
-            print(f"Falling back to configured BPM path: {config['detector']['bad_pixel_map_path']}")
-            bpm_path = config['detector']['bad_pixel_map_path']
+        # Attempt download
+        if CREDENTIALS_AVAILABLE and None not in [SFTP_HOST, SFTP_USERNAME, SFTP_BASE_PATH, SFTP_TELESCOPE]:
+            try:
+                bpm_path = download_latest_bpm(config)
+                if bpm_path:
+                    logger.info(f"Downloaded BPM: {bpm_path}")
+            except Exception as e:
+                logger.warning(f"BPM download failed: {e}")
         else:
-            # Update config with the downloaded path
-            config['detector']['bad_pixel_map_path'] = bpm_path
+            logger.warning("Credentials unavailable for BPM download")
     else:
-        bpm_path = config['detector']['bad_pixel_map_path']
+        # Check config for explicit path
+        if 'bad_pixel_map_path' in config.get('detector', {}):
+            config_path = Path(config['detector']['bad_pixel_map_path'])
+            if config_path.exists():
+                bpm_path = config_path
+                logger.info(f"Using BPM from config: {bpm_path}")
 
+    # Priority 3 & 4: Find local BPM if needed
+    if bpm_path is None:
+        try:
+            bpm_path = find_most_recent_bpm()
+            logger.info(f"Using most recent local BPM: {bpm_path}")
+        except FileNotFoundError as e:
+            # Priority 5: Error
+            raise FileNotFoundError(
+                "No bad pixel map found. Please either:\n"
+                "1. Enable BPM download with credentials, or\n"
+                "2. Specify 'bad_pixel_map_path' in config, or\n"
+                "3. Place a BPM file in the BPMs/ directory"
+            )
+
+    # Update config with final path
+    config['detector']['bad_pixel_map_path'] = str(bpm_path)
+
+    # Load the BPM
     with fits.open(bpm_path) as hdul:
-        # FITS convention: 1 = bad, 0 = good
         bad_pixel_data = hdul[0].data
 
-    # Convert to boolean: True = bad pixel
     return bad_pixel_data.astype(bool)
+
+
+def find_most_recent_bpm():
+    """
+    Find the most recent BPM file in the BPMs directory.
+
+    Priority:
+    1. Most recent dated file matching *BadPixelMap*YYYYMMDD.fits
+    2. Any .fits file in directory
+    3. Raise error if none found
+
+    Returns:
+        Path to BPM file
+    """
+    from paths import BPM_DIR
+    import re
+    from datetime import datetime
+
+    # Find all FITS files
+    all_fits_files = list(BPM_DIR.glob("*.fits"))
+
+    if not all_fits_files:
+        raise FileNotFoundError(f"No FITS files found in {BPM_DIR}")
+
+    # Try to find dated BPM files (Priority 1)
+    dated_files = []
+    for filepath in all_fits_files:
+        # Look for YYYYMMDD pattern in filename
+        match = re.search(r'(\d{8})\.fits$', filepath.name)
+        if match and 'BadPixelMap' in filepath.name:
+            date_str = match.group(1)
+            try:
+                date = datetime.strptime(date_str, "%Y%m%d")
+                dated_files.append((date, filepath))
+            except ValueError:
+                continue
+
+    if dated_files:
+        # Return most recent dated BPM
+        most_recent = max(dated_files, key=lambda x: x[0])
+        logger.info(f"Found dated BPM from {most_recent[0].strftime('%Y-%m-%d')}")
+        return most_recent[1]
+
+    # Priority 2: No dated files, return first FITS file found
+    logger.warning(f"No dated BPM files found, using: {all_fits_files[0].name}")
+    return all_fits_files[0]
 
 def aperture_contains_bad_pixels(x, y, radius, bad_pixel_map):
     """
