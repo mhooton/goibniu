@@ -9,7 +9,7 @@
 1. **Queries Gaia DR2** for the target star and potential comparison stars in the field
 2. **Applies proper motion corrections** to propagate star positions to the current epoch
 3. **Optimizes target placement** on the detector by:
-   - Testing positions across the detector at configurable grid spacing
+   - Testing positions across the detector at configurable grid spacing using parallel processing
    - Filtering comparison stars by magnitude range and detector boundaries
    - Checking for bad pixel contamination in apertures
    - Computing predicted precision using a trained Decision Tree model
@@ -27,20 +27,49 @@ pip install astropy astroquery numpy pandas matplotlib scikit-learn joblib param
 ```
 spirit_precision/
 ├── src/
-│   └── predict_target_precision.py
+│   ├── predict_target_precision.py      # Main entry point
+│   ├── paths.py                         # Directory path definitions
+│   ├── config.py                        # Configuration loading
+│   ├── credentials.py                   # Server credentials (add to .gitignore)
+│   ├── gaia_queries.py                  # Gaia DR2 catalogue queries
+│   ├── coordinate_utils.py              # Coordinate transformations and WCS
+│   ├── bad_pixel_handling.py            # Bad pixel map management
+│   ├── comparison_star_selection.py     # Comparison star filtering logic
+│   ├── precision_prediction.py          # Model inference and magnitude conversions
+│   ├── optimization.py                  # Position optimization with parallelization
+│   ├── visualization.py                 # Plot generation
+│   ├── batch_processing.py              # Batch mode and resume functionality
+│   └── utils.py                         # Utility functions
 ├── configs/
 │   ├── config.json
 │   └── precision_prediction_model.joblib
 ├── ref_images/
-│   └── spirit.fits                    # Reference FITS for detector WCS
+│   └── spirit.fits                      # Reference FITS for detector WCS
 ├── BPMs/
-│   └── 1_BadPixelMap_YYYYMMDD.fits   # Downloaded bad pixel maps
+│   └── 1_BadPixelMap_YYYYMMDD.fits     # Downloaded bad pixel maps
 ├── target_lists/
-│   └── targets.txt                    # Target lists for batch processing
+│   └── targets.txt                      # Target lists for batch processing
 └── runs/
-    ├── {gaia_id}_{YYYYMMDD}/          # Single target runs
-    └── batch_{YYYYMMDD}/              # Batch runs
+    ├── {gaia_id}_{YYYYMMDD}/            # Single target runs
+    └── batch_{YYYYMMDD}/                # Batch runs
 ```
+
+## Code Structure
+
+The codebase is modularized into functional components:
+
+- **paths.py**: Centralizes all directory path definitions (configs, BPMs, reference images, output runs)
+- **config.py**: Loads JSON configuration and extracts detector parameters from reference FITS
+- **credentials.py**: Stores server credentials (excluded from git)
+- **gaia_queries.py**: Handles Gaia DR2 queries with proper motion propagation and 2MASS crossmatching
+- **coordinate_utils.py**: WCS creation, sky-to-pixel transformations, proper motion propagation
+- **bad_pixel_handling.py**: Downloads latest BPM from server via SSH, loads BPM, checks aperture contamination
+- **comparison_star_selection.py**: Filters comparison stars by magnitude, position, and bad pixel contamination
+- **precision_prediction.py**: Runs trained Decision Tree model, handles magnitude conversions
+- **optimization.py**: Parallelized grid search across detector positions
+- **visualization.py**: Creates sky survey visualizations and precision maps
+- **batch_processing.py**: Manages batch runs, CSV summaries, and resume functionality
+- **utils.py**: Helper functions (type conversions, directory creation)
 
 ## Usage
 
@@ -62,6 +91,12 @@ python src/predict_target_precision.py --target 1234567890 --centered
 ```bash
 # Process multiple targets from a list
 python src/predict_target_precision.py --batch targets.txt --optimize --save --viz --map
+
+# Resume an interrupted batch from a specific date
+python src/predict_target_precision.py --batch targets.txt --resume 20250120 --optimize --save --viz
+
+# Resume and skip failed targets (don't retry them)
+python src/predict_target_precision.py --batch targets.txt --resume 20250120 --skip-failed --optimize
 ```
 
 **Target list format** (space or comma-separated, Gaia ID in 3rd column):
@@ -82,6 +117,11 @@ Sp0000-0533  00003477-0533070 2443091236074493824  0.1449558  -5.5520516 ...
 - `--save` - Save results to JSON file
 - `--viz` - Create sky survey visualization with optimal positioning
 - `--map` - Create precision map showing precision across detector
+
+**Batch Resume Options:**
+- `--resume YYYYMMDD` - Resume batch from specified date (e.g., `--resume 20250120`)
+- `--skip-failed` - Skip retrying failed targets when resuming (default: retry failed targets)
+- `--force-config` - Override configuration validation errors when resuming (not recommended)
 
 ## Configuration File
 
@@ -115,6 +155,49 @@ Sp0000-0533  00003477-0533070 2443091236074493824  0.1449558  -5.5520516 ...
 
 **Note:** `reference_image` and `bad_pixel_map_path` should be filenames only (not full paths). The code automatically looks in `ref_images/` and `BPMs/` directories.
 
+## Credentials Setup (Optional)
+
+For automatic BPM download from the server, create `src/credentials.py`:
+```python
+# src/credentials.py
+SFTP_HOST = "your.server.here"
+SFTP_USERNAME = "your_username"
+SFTP_BASE_PATH = "/path/to/pipeline/output"
+SFTP_TELESCOPE = "telescope_name"
+```
+
+Add to `.gitignore`:
+```
+src/credentials.py
+```
+
+If credentials are not provided, the tool will use the most recent BPM from the `BPMs/` directory.
+
+
+---
+
+## Decision Tree Summary
+```
+Command-line --download-bpm specified?
+├─ Yes → Use command-line value
+└─ No → Use config['download_BPM_from_server']
+
+download_BPM_from_server == True?
+├─ Yes → Credentials available?
+│   ├─ Yes → Download attempt
+│   │   ├─ Success → Use downloaded BPM ✓
+│   │   └─ Fail → Continue to fallback
+│   └─ No → Continue to fallback
+└─ No → config['detector']['bad_pixel_map_path'] exists?
+    ├─ Yes → Use that path ✓
+    └─ No → Continue to fallback
+
+Fallback: Find local BPM
+├─ Dated BPMs exist? → Use most recent ✓
+├─ Any .fits files exist? → Use first one ✓
+└─ No files found → ERROR ✗
+
+```
 ## Outputs
 
 ### Single Target Mode
@@ -173,7 +256,25 @@ Creates directory: `runs/{gaia_id}_{YYYYMMDD}/`
 ### Batch Processing Mode
 Creates directory: `runs/batch_{YYYYMMDD}/`
 
-**1. Batch Summary CSV** (`batch_summary_{YYYYMMDD}.csv`)
+**1. Batch Metadata JSON** (`batch_metadata.json`)
+
+Records batch configuration for consistency when resuming:
+```json
+{
+  "batch_date": "20250120",
+  "created_timestamp": "2025-01-20T14:30:45.123456",
+  "target_list": "targets.txt",
+  "bad_pixel_map": "1_BadPixelMap_20250119.fits",
+  "reference_image": "spirit.fits",
+  "aperture_radius": 15,
+  "grid_spacing": 3,
+  "edge_padding": 10,
+  "detector_width": 1024,
+  "detector_height": 1280
+}
+```
+
+**2. Batch Summary CSV** (`batch_summary_{YYYYMMDD}.csv`)
 
 Consolidated results for all targets with columns:
 - `gaia_id` - Gaia DR2 source ID
@@ -196,9 +297,80 @@ Consolidated results for all targets with columns:
 - `processing_time_seconds` - Processing time per target
 - `error_message` - Error description (if failed)
 
-**2. Individual Target Directories** (`{gaia_id}_{YYYYMMDD}/`)
+**3. Individual Target Directories** (`{gaia_id}_{YYYYMMDD}/`)
 
 Same outputs as single target mode for each successfully processed target.
+
+## Resuming Interrupted Batches
+
+Batch processing can be interrupted by network failures, connection drops, or other issues. The resume feature allows you to continue where you left off without reprocessing successful targets.
+
+### How Resume Works
+
+1. **Automatic State Tracking**: Each batch creates a `batch_metadata.json` file recording:
+   - Bad pixel map used
+   - Reference image
+   - Critical parameters (aperture, grid spacing, edge padding, detector size)
+
+2. **Consistency Validation**: When resuming, the code verifies that current parameters match the original batch. This prevents mixing results from different configurations.
+
+3. **Progress Detection**: Reads `batch_summary_{YYYYMMDD}.csv` to identify:
+   - `SUCCESS` targets (skip by default)
+   - `FAILED` targets (retry by default)
+
+4. **Appends Results**: New results are appended to the existing CSV, maintaining a complete record.
+
+### Resume Examples
+
+**Basic resume (retry failed targets):**
+```bash
+# Original batch started on Jan 20, interrupted
+python src/predict_target_precision.py --batch targets.txt --optimize --save --viz
+
+# Resume on Jan 21 or later
+python src/predict_target_precision.py --batch targets.txt --resume 20250120 --optimize --save --viz
+```
+
+**Skip failed targets:**
+```bash
+# Don't retry targets that failed previously
+python src/predict_target_precision.py --batch targets.txt --resume 20250120 --skip-failed --optimize
+```
+
+**Override configuration validation:**
+```bash
+# Force resume even if parameters changed (not recommended)
+python src/predict_target_precision.py --batch targets.txt --resume 20250120 --force-config --optimize
+```
+
+### Resume Validation
+
+The code validates that critical parameters match between original and resumed runs:
+- Aperture radius
+- Grid spacing
+- Edge padding
+- Detector dimensions
+
+**If parameters differ**, the code will error with a message like:
+```
+ERROR: Configuration mismatch detected:
+  - Aperture radius: 10 vs 15
+  - Grid spacing: 5 vs 3
+
+Cannot resume batch with different parameters.
+Use --force-config to override (not recommended).
+```
+
+**Why this matters:** Mixing results from different grid spacings or aperture sizes would make the batch summary CSV inconsistent and scientifically invalid.
+
+### Bad Pixel Map Consistency
+
+When resuming, the code **always uses the original bad pixel map** from the initial run, even if:
+- `download_BPM_from_server: true` in config
+- A newer BPM is available on the server
+- You're resuming days later
+
+This ensures all targets in a batch use identical bad pixel maps for consistency.
 
 ## Bad Pixel Map Management
 
@@ -206,17 +378,18 @@ Same outputs as single target mode for each successfully processed target.
 
 When `download_BPM_from_server: true` in config:
 
-1. Connects to `speculoos@appcs.ra.phy.cam.ac.uk` via SSH
+1. Connects to server via SSH using stored keys
 2. Searches for latest bad pixel map:
-   - Checks `/appct/data/SPECULOOSPipeline/PipelineOutput/v2/Callisto/output/{YYYYMMDD}/reduction/1_BadPixelMap.fits`
+   - Checks `{base_path}/v2/{telescope}/output/{YYYYMMDD}/reduction/1_BadPixelMap.fits`
    - Tries v2, then v3 for each date
-   - Goes back in time from yesterday to 2021-01-01
+   - Goes back in time from yesterday to cutoff date (default: 2021-01-01)
 3. Downloads to `BPMs/1_BadPixelMap_{YYYYMMDD}.fits`
 4. Falls back to `bad_pixel_map_path` if download fails
 
 **Requirements:**
 - SSH key authentication already set up for the server
 - `paramiko` Python package installed
+- Credentials configured in `src/credentials.py`
 
 ### Manual Bad Pixel Map
 
@@ -231,7 +404,10 @@ When `download_BPM_from_server: false`:
 
 1. **Query Expansion**: Queries Gaia for a field ~2× detector size to ensure all potential comparison stars are captured regardless of target placement
 
-2. **Grid Search**: Tests target positions at regular intervals (`grid_spacing_pixels`) across the detector within valid bounds (accounting for `edge_padding_pixels` and `aperture.radius_pixels`)
+2. **Parallel Grid Search**: Tests target positions at regular intervals (`grid_spacing_pixels`) across the detector within valid bounds (accounting for `edge_padding_pixels` and `aperture.radius_pixels`)
+   - Uses all available CPU cores via `joblib` parallelization
+   - Each worker independently tests one detector position
+   - Typical speedup: 4-8× on multi-core systems
 
 3. **Position Validation**: For each tested position:
    - Checks target aperture for bad pixel contamination
@@ -272,18 +448,44 @@ Model file: `configs/precision_prediction_model.joblib`
 - Target may not have 2MASS crossmatch (required for J-band magnitude)
 
 **SSH connection fails for BPM download**
-- Verify SSH key authentication is set up for `speculoos@appcs.ra.phy.cam.ac.uk`
+- Verify SSH key authentication is set up for the server
+- Check `credentials.py` has correct hostname and username
 - Set `download_BPM_from_server: false` and use local bad pixel map
+
+**"Object of type PosixPath is not JSON serializable"**
+- Path objects need converting to strings before JSON serialization
+- This has been fixed in the modularized version
 
 **Visualization shows wrong orientation**
 - Survey image orientation may differ from detector
 - This is cosmetic only; optimal positioning calculations are correct
 
+**"Batch metadata not found" when resuming**
+- The batch directory may be from an older version before metadata was saved
+- Cannot safely resume - start a new batch
+
+**"Configuration mismatch detected" when resuming**
+- Current config differs from original batch parameters
+- Either restore original config or use `--force-config` (not recommended)
+- Mixing different parameters in one batch invalidates scientific consistency
+
+**Resume completed but some targets still FAILED**
+- Transient failures (network issues) may succeed on retry
+- Persistent failures (no comparison stars, bad Gaia ID) will fail again
+- Check `error_message` column in CSV for details
+- Use `--skip-failed` on subsequent resumes to stop retrying persistent failures
+
+**Gaia password warnings appearing multiple times**
+- This is harmless - one warning per parallel worker
+- Suppress with `warnings.filterwarnings('ignore', message='.*passwords.*inactivated.*')` at top of `gaia_queries.py`
+
 ## Performance Notes
 
-- **Grid spacing**: Smaller values (1-2 pixels) are more thorough but slower. Values of 3-5 pixels provide good balance.
-- **Detector size**: Processing time scales with detector area and grid density. Typical 1024×1024 detector with spacing=3 takes 30-60 seconds per target.
-- **Batch processing**: Processes targets sequentially. Use batch mode for unattended overnight runs.
+- **Parallelization**: Grid search uses all CPU cores via `joblib`. Typical speedup: 4-8× on modern multi-core systems
+- **Grid spacing**: Smaller values (1-2 pixels) are more thorough but slower. Values of 3-5 pixels provide good balance
+- **Detector size**: Processing time scales with detector area and grid density. Typical 1024×1280 detector with spacing=3 takes ~30-60 seconds per target on modern hardware
+- **Batch processing**: Processes targets sequentially. Use batch mode for unattended overnight runs
+- **Gaia queries**: Can be slow (several minutes per target) due to complex joins with 2MASS. This is the main bottleneck, not the grid search
 
 ## Citation
 
