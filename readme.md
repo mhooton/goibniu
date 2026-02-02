@@ -1,4 +1,6 @@
-# SPECULOOS Photometric Precision Prediction Tool
+# goibniu
+
+![Alt text](goibniu.png)
 
 ## Overview
 
