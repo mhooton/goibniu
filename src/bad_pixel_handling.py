@@ -5,6 +5,7 @@ import os
 from astropy.io import fits
 from paths import BPM_DIR
 import re
+from pathlib import Path
 try:
     from credentials import SFTP_HOST, SFTP_USERNAME, SFTP_BASE_PATH, SFTP_TELESCOPE
     CREDENTIALS_AVAILABLE = True
