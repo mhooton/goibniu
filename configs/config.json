@@ -1,5 +1,8 @@
 {
-  "download_BPM_from_server": true,
+  "runs_dir": "/data/SPECULOOSPipeline/goibniu_runs",
+  "use_latest_BPM": true,
+  "use_local_db": true,
+  "teff_fallback": 3000.0,
   "reference_image": "spirit.fits",
   "detector": {
     "bad_pixel_map_path": "1_BadPixelMap_20251217.fits",
