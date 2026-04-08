@@ -1,12 +1,14 @@
 /old/
 .idea/*
 src/credentials.py/
+src/build_target_catalogue.py
 # Exclude all BPMs except one example
 BPMs/*
 !BPMs/1_BadPixelMap_20251217.fits  # Keep one example BPM
 configs/*
 !configs/config.json
 !configs/precision_prediction_model.joblib
+docker/*
 ref_images/*
 !ref_images/spirit.fits
 runs/*
