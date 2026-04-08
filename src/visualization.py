@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 from comparison_star_selection import calculate_expansion_factor
 from coordinate_utils import pixel_to_sky, sky_to_pixel, create_wcs
-from gaia_queries import get_field_jmag
+from gaia_queries import get_field_jmag, get_target_properties
 from utils import create_run_directory
 
 def create_optimization_visualization(gaia_id, config, opt_result, output_path=None):
@@ -40,19 +40,16 @@ def create_optimization_visualization(gaia_id, config, opt_result, output_path=N
         badpix_base = os.path.splitext(os.path.basename(config['detector']['bad_pixel_map_path']))[0]
         output_path = run_dir / f'optimization_viz_{gaia_id}_{ref_image_base}_{badpix_base}.png'
 
-    # Query expanded field
+    # Query expanded field for comparison stars
     expansion = calculate_expansion_factor(config)
     jmag_data = get_field_jmag(gaia_id, config, expansion_factor=expansion)
 
-    # Get target info
+    # Get target info from opt_result — avoids redundant Gaia query
     target_ra = opt_result['target_ra']
     target_dec = opt_result['target_dec']
     optimal_x = opt_result['optimal_x']
     optimal_y = opt_result['optimal_y']
-
-    # Get target row
-    target_row = jmag_data[jmag_data['source_id'] == int(gaia_id)]
-    target_jmag = float(target_row['j_m'][0])
+    target_jmag = opt_result['target_jmag']
 
     # Filter comparison stars by magnitude
     fainter_limit = config['comparison_star_limits']['fainter_limit']
