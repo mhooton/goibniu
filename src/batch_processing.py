@@ -3,24 +3,100 @@ import csv
 import json
 from paths import PROJECT_ROOT, RUNS_DIR
 
-def read_target_list(filename):
+def _is_pipe_delimited(target_list_path):
     """
-    Read Gaia DR2 IDs from target list file.
+    Sniff whether a file uses pipe-delimited format.
 
-    Expects a space/comma-separated file with Gaia IDs in the 3rd column.
-    Skips lines starting with # or that don't have at least 3 columns.
+    Returns True if any non-comment, non-empty line contains a '|' character.
+    """
+    with open(target_list_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '|' in line:
+                return True
+    return False
+
+
+def _read_pipe_delimited_target_list(target_list_path):
+    """
+    Read Gaia DR2 IDs from a pipe-delimited target list with a named GAIA_ID column.
+
+    Expects a format like:
+        | OBJECT | RA | DEC | ... | GAIA_ID | ... |
+
+    Skips separator rows (lines consisting only of |, -, and whitespace).
+    Skips rows where GAIA_ID is empty or non-numeric.
 
     Args:
-        filename: Name of file in target_lists/ directory
+        target_list_path: Path object to the target list file
 
     Returns:
         List of Gaia DR2 IDs as integers
     """
-    target_list_path = PROJECT_ROOT / "target_lists" / filename
+    gaia_ids = []
+    gaia_col_idx = None
 
-    if not target_list_path.exists():
-        raise FileNotFoundError(f"Target list not found: {target_list_path}")
+    with open(target_list_path, 'r') as f:
+        for line in f:
+            line = line.strip()
 
+            # Skip comments and empty lines
+            if not line or line.startswith('#'):
+                continue
+
+            # Skip separator rows (e.g. |---|---|...)
+            if all(c in '|-+ \t' for c in line):
+                continue
+
+            # Split on '|' and strip whitespace from each cell
+            parts = [p.strip() for p in line.split('|')]
+            # Remove only the leading and trailing empty strings caused by outer '|'
+            if parts and parts[0] == '':
+                parts = parts[1:]
+            if parts and parts[-1] == '':
+                parts = parts[:-1]
+
+            if not parts:
+                continue
+
+            # Identify header row by looking for 'GAIA_ID'
+            if gaia_col_idx is None:
+                if 'GAIA_ID' in parts:
+                    gaia_col_idx = parts.index('GAIA_ID')
+                continue  # Header row itself is not data
+
+            # Extract GAIA_ID value
+            if gaia_col_idx >= len(parts):
+                continue
+
+            gaia_id_str = parts[gaia_col_idx]
+            if not gaia_id_str:
+                continue
+
+            try:
+                gaia_id = int(gaia_id_str)
+                gaia_ids.append(gaia_id)
+            except ValueError:
+                continue
+
+    return gaia_ids
+
+
+def _read_positional_target_list(target_list_path):
+    """
+    Read Gaia DR2 IDs from a positional (space/comma-separated) target list.
+
+    Expects Gaia IDs in the 3rd column (0-indexed: 2).
+    Skips lines starting with # or that don't have at least 3 columns.
+
+    Args:
+        target_list_path: Path object to the target list file
+
+    Returns:
+        List of Gaia DR2 IDs as integers
+    """
     gaia_ids = []
 
     with open(target_list_path, 'r') as f:
@@ -39,8 +115,37 @@ def read_target_list(filename):
                     gaia_id = int(parts[2])  # 3rd column (0-indexed: 2)
                     gaia_ids.append(gaia_id)
                 except ValueError:
-                    # Skip lines where 3rd column isn't a valid integer
                     continue
+
+    return gaia_ids
+
+
+def read_target_list(filename):
+    """
+    Read Gaia DR2 IDs from a target list file.
+
+    Supports two formats, detected automatically:
+      - Pipe-delimited table with a named GAIA_ID column (e.g. exported from a
+        catalogue tool). Example header row: | OBJECT | RA | DEC | GAIA_ID | ...
+      - Legacy positional format: space/comma-separated with Gaia ID in the 3rd column.
+
+    Args:
+        filename: Name of file in target_lists/ directory
+
+    Returns:
+        List of Gaia DR2 IDs as integers
+    """
+    target_list_path = PROJECT_ROOT / "target_lists" / filename
+
+    if not target_list_path.exists():
+        raise FileNotFoundError(f"Target list not found: {target_list_path}")
+
+    if _is_pipe_delimited(target_list_path):
+        print(f"Detected pipe-delimited format for {filename}")
+        gaia_ids = _read_pipe_delimited_target_list(target_list_path)
+    else:
+        print(f"Detected positional format for {filename}")
+        gaia_ids = _read_positional_target_list(target_list_path)
 
     print(f"Read {len(gaia_ids)} targets from {filename}")
     return gaia_ids
