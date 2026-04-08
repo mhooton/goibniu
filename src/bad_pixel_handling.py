@@ -7,20 +7,20 @@ from paths import BPM_DIR
 import re
 from pathlib import Path
 try:
-    from credentials import SFTP_HOST, SFTP_USERNAME, SFTP_BASE_PATH, SFTP_TELESCOPE
+    from credentials import SFTP_HOST, SFTP_USERNAME, SFTP_BASE_PATH, SFTP_BASE_PATH_DOCKER, SFTP_TELESCOPE
     CREDENTIALS_AVAILABLE = True
 except ImportError:
     CREDENTIALS_AVAILABLE = False
     SFTP_HOST = None
     SFTP_USERNAME = None
     SFTP_BASE_PATH = None
+    SFTP_BASE_PATH_DOCKER = None
     SFTP_TELESCOPE = None
 
 import logging
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
-
 
 def download_latest_bpm(config, cutoff_date="20210101"):
     """
@@ -103,31 +103,94 @@ def download_latest_bpm(config, cutoff_date="20210101"):
         ssh.close()
 
 
+def find_latest_bpm_local(config, cutoff_date="20210101"):
+    """
+    Find and copy the latest bad pixel map from the locally mounted filesystem.
+
+    Mirrors the logic of download_latest_bpm but uses direct filesystem access
+    instead of SFTP. Used when GOIBNIU_ON_SERVER is set.
+
+    Args:
+        config: Configuration dictionary (modified in-place to update BPM path)
+        cutoff_date: Stop searching before this date (format: YYYYMMDD)
+
+    Returns:
+        Path to the local BPM file
+    """
+    import shutil
+
+    print("\n=== Searching for latest Bad Pixel Map on mounted filesystem ===")
+
+    cutoff = datetime.strptime(cutoff_date, "%Y%m%d")
+    current_date = datetime.now() - timedelta(days=1)
+    versions = ["v2", "v3"]
+
+    while current_date >= cutoff:
+        date_str = current_date.strftime("%Y%m%d")
+
+        for version in versions:
+            remote_path = Path(f"{SFTP_BASE_PATH_DOCKER}/{version}/{SFTP_TELESCOPE}/output/{date_str}/reduction/1_BadPixelMap.fits")
+
+            if remote_path.exists():
+                print(f"Found BPM: {version}/{date_str}")
+
+                local_filename = f"1_BadPixelMap_{date_str}.fits"
+                local_path = BPM_DIR / local_filename
+
+                print(f"Copying to {local_path}...")
+                shutil.copy(remote_path, local_path)
+                print(f"Successfully copied BPM from {version}/{date_str}")
+
+                config['detector']['bad_pixel_map_path'] = str(local_path)
+                return local_path
+
+        current_date -= timedelta(days=1)
+
+    raise FileNotFoundError(
+        f"No BPM files found after cutoff date {cutoff_date}. "
+        f"Searched from yesterday back to {cutoff_date}."
+    )
+
+
 def load_bad_pixel_map(config):
     """
     Load bad pixel map with priority hierarchy:
     1. Command-line override (handled before calling this)
-    2. Config download_BPM_from_server
-       - If True: download (requires credentials)
+    2. Config use_latest_BPM
+       - If True and GOIBNIU_ON_SERVER set: find most recent BPM via mounted filesystem
+       - If True and not on server: download via SFTP (requires credentials)
        - If False: use config['detector']['bad_pixel_map_path'] if exists
     3. Most recent dated BPM in BPMs directory
     4. Any BPM in BPMs directory
     5. Error if none found
     """
+    BPM_DIR.mkdir(parents=True, exist_ok=True)
     bpm_path = None
 
-    # Priority 1 & 2: Download or use config path
-    if config.get('download_BPM_from_server', False):
-        # Attempt download
-        if CREDENTIALS_AVAILABLE and None not in [SFTP_HOST, SFTP_USERNAME, SFTP_BASE_PATH, SFTP_TELESCOPE]:
-            try:
-                bpm_path = download_latest_bpm(config)
-                if bpm_path:
-                    logger.info(f"Downloaded BPM: {bpm_path}")
-            except Exception as e:
-                logger.warning(f"BPM download failed: {e}")
+    # Priority 1 & 2: Find latest or use config path
+    if config.get('use_latest_BPM', False):
+        if os.environ.get('GOIBNIU_ON_SERVER', '').lower() == 'true':
+            # BPMs are directly accessible via mounted filesystem
+            if CREDENTIALS_AVAILABLE and None not in [SFTP_BASE_PATH_DOCKER, SFTP_TELESCOPE]:
+                try:
+                    bpm_path = find_latest_bpm_local(config)
+                    if bpm_path:
+                        logger.info(f"Found BPM on mounted filesystem: {bpm_path}")
+                except Exception as e:
+                    logger.warning(f"Local BPM search failed: {e}")
+            else:
+                logger.warning("Credentials unavailable for local BPM search")
         else:
-            logger.warning("Credentials unavailable for BPM download")
+            # Attempt SFTP download
+            if CREDENTIALS_AVAILABLE and None not in [SFTP_HOST, SFTP_USERNAME, SFTP_BASE_PATH, SFTP_TELESCOPE]:
+                try:
+                    bpm_path = download_latest_bpm(config)
+                    if bpm_path:
+                        logger.info(f"Downloaded BPM: {bpm_path}")
+                except Exception as e:
+                    logger.warning(f"BPM download failed: {e}")
+            else:
+                logger.warning("Credentials unavailable for BPM download")
     else:
         # Check config for explicit path
         if 'bad_pixel_map_path' in config.get('detector', {}):
