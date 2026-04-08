@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import json
 from datetime import datetime
@@ -11,6 +12,7 @@ warnings.filterwarnings('ignore', message='Trying to unpickle estimator')
 
 import logging
 # Setup logging
+logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Load modules
@@ -18,12 +20,11 @@ from config import load_config
 from bad_pixel_handling import load_bad_pixel_map
 from batch_processing import (read_target_list, save_batch_metadata, initialize_batch_csv, append_to_batch_csv,
                               load_and_validate_batch_metadata, read_completed_targets)
-from gaia_queries import get_field_jmag
+from gaia_queries import get_field_jmag, get_target_properties
 from optimization import optimize_target_position
 from paths import RUNS_DIR
 from precision_prediction import convert_j_to_zyj, combined_mag, effective_mg, prediction_from_fit, prediction_from_DT
 from utils import create_run_directory, to_float
-from visualization import create_optimization_visualization
 
 
 def save_optimization_results(result, gaia_id, output_dir=None):
@@ -77,7 +78,7 @@ def save_optimization_results(result, gaia_id, output_dir=None):
 
 
 def predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False,
-            create_viz=False, save_precision_map=False, output_dir=None):
+            create_viz=False, save_precision_map=False, output_dir=None, n_jobs=4):
     """
     Main prediction function for a given target star.
 
@@ -89,13 +90,15 @@ def predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False,
         save_results: If True, save optimization results to JSON file
         create_viz: If True, create PNG visualization of optimization
         save_precision_map: If True, save precision map FITS file (only when optimize=True)
+        n_jobs: Number of parallel jobs for grid search (default: 4)
     """
 
     if optimize:
         # Run optimization to find best position (optionally creating precision map)
         start_time = time.time()
         opt_result = optimize_target_position(gaia_id, config, bad_pixel_map,
-                                              save_precision_map=save_precision_map)
+                                              save_precision_map=save_precision_map,
+                                              n_jobs=n_jobs)
         processing_time = time.time() - start_time
 
         # Add metadata to result
@@ -120,43 +123,44 @@ def predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False,
 
         # Create visualization if requested
         if create_viz:
+            from visualization import create_optimization_visualization
             create_optimization_visualization(gaia_id, config, opt_result, output_path=output_dir)
 
         return opt_result
 
-    jmag_data = get_field_jmag(gaia_id, config)
+    # Get target properties independently — handles missing 2MASS via G+Teff fallback
+    target = get_target_properties(gaia_id, config=config, use_local_db=config.get('use_local_db', True))
+    target_jmag = target['j_m']
+    target_teff = target['teff_val']
+    if target['j_estimated']:
+        logger.warning(f"Target J magnitude was estimated from G+Teff — precision prediction will be approximate")
 
-    # Extract target star row
-    target_row = jmag_data[jmag_data['source_id'] == int(gaia_id)]
-    target_index = np.where(target_row)[0][0]
+    # Get comparison stars for the field — target already excluded
+    jmag_data = get_field_jmag(gaia_id, config, use_local_db=config.get('use_local_db', True))
 
     # Filter comparison stars by magnitude range (from config)
     fainter_limit = config['comparison_star_limits']['fainter_limit']
     brighter_limit = config['comparison_star_limits']['brighter_limit']
-    jmag_data = jmag_data[jmag_data['j_m'] < (target_row['j_m'] + fainter_limit)]
-    jmag_data = jmag_data[jmag_data['j_m'] > (target_row['j_m'] + brighter_limit)]
+    comp_star_mag = jmag_data[
+        (jmag_data['j_m'] < target_jmag + fainter_limit) &
+        (jmag_data['j_m'] > target_jmag + brighter_limit)
+        ]['j_m']
 
-    # Extract comparison star magnitudes (excluding target)
-    comp_star_mag = jmag_data[jmag_data['source_id'] != int(gaia_id)]['j_m']
+    # Build combined magnitude array with target prepended at index 0
+    target_zyj = to_float(convert_j_to_zyj(target_jmag, config))
+    comp_zyj_mags = convert_j_to_zyj(comp_star_mag, config)
+    zyj_mags_all = np.concatenate([[target_zyj], comp_zyj_mags])
 
-    # Convert all J-band magnitudes to zYJ
-    zyj_mags_all = convert_j_to_zyj(jmag_data['j_m'], config)
-
-    # Calculate combined magnitude (including target)
+    # Calculate combined magnitude (including target at index 0)
     combined_mags = combined_mag(zyj_mags_all)
-    effective_mag = effective_mg(zyj_mags_all, target_index)
-
-    # Predict precision using quadratic fit
-    predicted_precision = 10 ** prediction_from_fit(combined_mags, config)
-    eff_predicted_precision = 10 ** prediction_from_fit(effective_mag, config)
+    effective_mag = effective_mg(zyj_mags_all, 0)
 
     # Calculate combined magnitude without target
-    combined_mags_wo_target = combined_mag(convert_j_to_zyj(comp_star_mag, config))
+    combined_mags_wo_target = combined_mag(comp_zyj_mags)
 
-    # Extract target properties and convert to floats
+    # Extract remaining target properties
     n_comp = len(comp_star_mag)
-    target_zyj = to_float(convert_j_to_zyj(target_row['j_m'], config))
-    target_teff = to_float(target_row['teff_val'])
+    target_teff = to_float(target_teff)
     combined_mags = to_float(combined_mags)
     effective_mag = to_float(effective_mag)
     combined_mags_wo_target = to_float(combined_mags_wo_target)
@@ -243,6 +247,8 @@ Examples:
                         help='Download latest BPM from server (default: True)')
     parser.add_argument('--no-download-bpm', dest='download_bpm', action='store_false',
                         help='Skip BPM download, use existing file')
+    parser.add_argument('--config', type=str, default=None, metavar='PATH',
+                        help='Path to config JSON file (default: uses built-in default path)')
 
     args = parser.parse_args()
 
@@ -266,12 +272,16 @@ Examples:
         format='%(message)s'  # Clean format without timestamps/levels for user-facing output
     )
 
+    # Resolve number of parallel jobs: env var overrides default; explicit kwarg (when called
+    # programmatically) overrides env var. Default is 4 when neither is set.
+    n_jobs = int(os.environ.get('N_CORES', 4))
+
     # Load configuration once
-    config = load_config()
+    config = load_config(config_path=args.config)
 
     # After loading config, before loading BPM
     if args.download_bpm is not None:  # Command-line takes priority
-        config['download_BPM_from_server'] = args.download_bpm
+        config['use_latest_BPM'] = args.download_bpm
 
     print("\n=== Loading Bad Pixel Map ===")
     bad_pixel_map = load_bad_pixel_map(config)
@@ -293,7 +303,7 @@ Examples:
             logger.info("RUNNING CENTERED PREDICTION")
             logger.info("=" * 60)
             predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False,
-                    create_viz=False)
+                    create_viz=False, n_jobs=n_jobs)
 
         # Run optimization if requested
         if args.optimize:
@@ -301,14 +311,15 @@ Examples:
             logger.info("RUNNING OPTIMIZATION")
             logger.info("=" * 60)
             predict(gaia_id, config, bad_pixel_map, optimize=True, save_results=args.save,
-                    create_viz=args.viz, save_precision_map=args.map)
+                    create_viz=args.viz, save_precision_map=args.map, n_jobs=n_jobs)
 
         # If no mode specified, default to centered prediction
         if not (args.centered or args.optimize):
             print("\n" + "=" * 60)
             print("RUNNING CENTERED PREDICTION (default)")
             print("=" * 60)
-            predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False, create_viz=False)
+            predict(gaia_id, config, bad_pixel_map, optimize=False, save_results=False, create_viz=False,
+                    n_jobs=n_jobs)
 
     # Batch mode
     elif args.batch:
@@ -418,7 +429,8 @@ Examples:
                 result = predict(gaia_id, config, bad_pixel_map, optimize=True,
                                  save_results=args.save, create_viz=args.viz,
                                  save_precision_map=args.map,
-                                 output_dir=target_output_dir)
+                                 output_dir=target_output_dir,
+                                 n_jobs=n_jobs)
 
                 # Append to batch CSV
                 append_to_batch_csv(csv_path, result)
