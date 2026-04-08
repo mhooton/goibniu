@@ -11,10 +11,9 @@ logger = logging.getLogger(__name__)
 from bad_pixel_handling import aperture_contains_bad_pixels, distance_to_nearest_hazard
 from comparison_star_selection import calculate_expansion_factor, select_comparison_stars, aperture_on_detector
 from coordinate_utils import create_wcs, sky_to_pixel, pixel_to_sky
-from gaia_queries import get_field_jmag
+from gaia_queries import get_field_jmag, get_target_properties
 from precision_prediction import convert_j_to_zyj, prediction_from_DT
 from utils import to_float, create_run_directory
-from visualization import save_precision_map_png
 
 import warnings
 warnings.filterwarnings('ignore', message="Warning: 'partition' will ignore the 'mask' of the MaskedArray.*", category=UserWarning)
@@ -91,7 +90,7 @@ def test_single_position(target_x, target_y, target_ra, target_dec,
         'combined_mag': to_float(comp_selection['combined_mag'])
     }
 
-def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=False):
+def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=False, n_jobs=-1):
     """
     Find optimal detector position for target star to maximize photometric precision.
 
@@ -100,6 +99,7 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
         config: Configuration dictionary
         bad_pixel_map: 2D boolean array where True = bad pixel (passed in, not loaded)
         save_precision_map: If True, save 2D precision map as FITS file
+        n_jobs: Number of parallel jobs for grid search (default: -1, use all cores)
 
     Returns:
         dict containing:
@@ -124,19 +124,23 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
     logger.info("Querying Gaia for expanded field...")
     expansion = calculate_expansion_factor(config)
     logger.info(f"Expansion factor: {expansion:.3f}")
-    jmag_data = get_field_jmag(gaia_id, config, expansion_factor=expansion)
-    logger.info(f"Gaia query returned {len(jmag_data)} stars")
 
-    # Get target coordinates
-    target_row = jmag_data[jmag_data['source_id'] == int(gaia_id)]
-    if len(target_row) == 0:
-        raise ValueError(f"Target star {gaia_id} not found in query results")
-    target_ra = float(target_row['ra'][0])
-    target_dec = float(target_row['dec'][0])
-    target_jmag = float(target_row['j_m'][0])
-    target_teff = to_float(target_row['teff_val'][0])
+    # Get target properties independently — handles missing 2MASS via G+Teff fallback
+    target = get_target_properties(gaia_id, config=config, use_local_db=config.get('use_local_db', True))
+    target_ra = target['ra']
+    target_dec = target['dec']
+    target_jmag = target['j_m']
+    target_teff = target['teff_val']
+    if target['j_estimated']:
+        logger.warning(f"Target J magnitude was estimated from G+Teff — precision prediction will be approximate")
 
-    logger.info(f"Target: RA={target_ra:.6f}, Dec={target_dec:.6f}, J={target_jmag:.3f}, Teff={target_teff:.0f}K")
+    # Get comparison stars for the expanded field
+    jmag_data = get_field_jmag(gaia_id, config, expansion_factor=expansion,
+                               use_local_db=config.get('use_local_db', True))
+    logger.info(f"Gaia query returned {len(jmag_data)} comparison stars")
+
+    teff_str = f"{target_teff:.0f}K" if target_teff is not None else "unknown"
+    logger.info(f"Target: RA={target_ra:.6f}, Dec={target_dec:.6f}, J={target_jmag:.3f}, Teff={teff_str}")
 
     # Get detector parameters
     det_width = config['detector']['width_pixels']
@@ -183,15 +187,21 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
     # Store results
     results = []
 
+    if target_teff is None:
+        raise ValueError(
+            f"Target star {gaia_id} has no effective temperature — "
+            f"cannot run Decision Tree prediction."
+        )
+
     # Convert target J-mag to zYJ once
     target_zyj = to_float(convert_j_to_zyj(target_jmag, config))
 
     # Run parallel grid search
-    logger.info(f"Running parallel grid search using all available CPU cores...")
+    logger.info(f"Running parallel grid search using {n_jobs if n_jobs != -1 else 'all available'} CPU cores...")
 
     parallel_verbose = 10 if logging.getLogger().getEffectiveLevel() <= logging.DEBUG else 0
 
-    all_results = Parallel(n_jobs=-1, verbose=parallel_verbose)(
+    all_results = Parallel(n_jobs=n_jobs, verbose=parallel_verbose)(
         delayed(test_single_position)(
             target_x, target_y, target_ra, target_dec,
             comp_stars, config, bad_pixel_map,
@@ -292,6 +302,7 @@ def optimize_target_position(gaia_id, config, bad_pixel_map, save_precision_map=
     # Create precision map if requested
     precision_map = None
     if save_precision_map:
+        from visualization import save_precision_map_png
         logger.info("\n=== Creating Precision Map ===")
 
         # Calculate coarse grid dimensions
