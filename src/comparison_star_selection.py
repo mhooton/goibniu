@@ -68,7 +68,7 @@ def aperture_on_detector(x, y, radius, detector_width, detector_height, padding)
 
 def select_comparison_stars(target_x_det, target_y_det,
                             comp_x, comp_y, comp_jmags,
-                            bad_pixel_map, config, n_comparison=None):
+                            bad_pixel_map, config, n_comparison=4):
     """
     Select optimal comparison stars for differential photometry at a given detector position.
 
